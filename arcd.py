@@ -16,19 +16,6 @@ app = Flask(__name__)
 db = sqlite3.connect("claims.db", check_same_thread=False)
 db.row_factory = sqlite3.Row
 
-@app.route("/sync/<string:domain>/<int:timestamp>", methods=['GET'])
-def getSyncDomain(domain, timestamp):
-    dbc = db.cursor()
-    dbc.execute("SELECT * FROM claims WHERE domain=? AND timestamp>?"
-                "ORDER BY timestamp ASC", [domain, timestamp])
-
-    def respond():
-        r = {"get": {"type": "sync", "domain": domain}, "results": {}}
-        for row in dbc.fetchall():
-            r['results'][row['signature']] = json.loads(row['payload'])
-        return json.dumps(r, sort_keys=True, indent=4)
-    return Response(respond(), mimetype='application/json')
-
 @app.route("/domains", methods=['GET'])
 def getClaimDomains():
     dbc = db.cursor()
@@ -142,6 +129,19 @@ def registerClaim(signature, newRecord):
         return json.dumps(r, sort_keys=True, indent=4)
     return Response(respond(), mimetype='application/json'), 200
 
+@app.route("/sync/<string:domain>/<int:timestamp>", methods=['GET'])
+def getSyncDomain(domain, timestamp):
+    dbc = db.cursor()
+    dbc.execute("SELECT * FROM claims WHERE domain=? AND timestamp>?"
+                "ORDER BY timestamp ASC", [domain, timestamp])
+
+    def respond():
+        r = {"get": {"type": "sync", "domain": domain}, "results": {}}
+        for row in dbc.fetchall():
+            r['results'][row['signature']] = row['payload']
+        return json.dumps(r, sort_keys=True, indent=4)
+    return Response(respond(), mimetype='application/json')
+
 @app.route("/sync/pull", methods=['GET'])
 def syncPullServers():
     dbc = db.cursor()
@@ -157,16 +157,18 @@ def syncPullServers():
         receivedJSON = requests.get(requestURL).json()
 
         for receivedSignature, receivedRecord in receivedJSON['results'].items():
-            registerResponse = registerClaim(receivedSignature, json.dumps(receivedRecord))
+            registerResponse = registerClaim(receivedSignature, receivedRecord)
 
             if registerResponse[1] == 200:
+                receivedRecordJSON = json.loads(receivedRecord)
                 db.execute("UPDATE peers SET lastsyncedtimestamp=? WHERE "
                    "url=? AND domain=? AND mode='pull' AND lastsyncedtimestamp<?",
-                   [receivedRecord['timestamp'], row['url'],
-                    row['domain'], receivedRecord['timestamp']])
+                   [receivedRecordJSON['timestamp'], row['url'],
+                    row['domain'], receivedRecordJSON['timestamp']])
                 r['saved'].append(receivedSignature)
             else:
                 r['rejected'].append(receivedSignature)
+                break
 
     return Response(json.dumps(r, sort_keys=True, indent=4), mimetype='application/json'), 200
 
@@ -185,11 +187,11 @@ def syncPushServersGet():
                     "domain=? AND url=? AND MODE='push' "
                     "ORDER BY lastsyncedtimestamp ASC LIMIT 1",
                     [row['domain'], row['url']])
-        oldestRecordTimestamp = dbc.fetchone()[0]
+        oldestRecordTimestamp = int(dbc.fetchone()[0])
         r['presync'][url] = oldestRecordTimestamp
 
         dbc.execute("SELECT * FROM claims WHERE domain=? AND timestamp>=?",
-                    [row['domain'], int(oldestRecordTimestamp)])
+                    [row['domain'], oldestRecordTimestamp])
 
         for srow in dbc.fetchall():
             selectedJSON = json.loads(srow['payload'])
@@ -199,8 +201,9 @@ def syncPushServersGet():
         r['postsync'][url] = receivedJSON['acceptedTimestamp']
 
         db.execute("UPDATE peers SET lastsyncedtimestamp=? WHERE "
-           "url=? AND domain=? AND mode='push'",
-           [receivedJSON['acceptedTimestamp'], dburl, dbdomain])
+                   "url=? AND domain=? AND mode='push'",
+                   [receivedJSON['acceptedTimestamp'], dburl, dbdomain])
+        db.commit()
     return Response(json.dumps(r, sort_keys=True, indent=4), mimetype='application/json'), 200
 
 @app.route("/sync/push/<string:domain>", methods=['POST'])
@@ -229,4 +232,4 @@ if __name__ == "__main__":
     db.execute("CREATE TABLE IF NOT EXISTS peers (domain, url, mode, lastsyncedtimestamp, "\
                "PRIMARY KEY(domain, url, mode))")
     db.commit()
-    app.run(threaded=True)
+    app.run(threaded=True, host='0.0.0.0')
