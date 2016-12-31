@@ -27,15 +27,6 @@ def getClaimDomains():
         return json.dumps(r, sort_keys=True, indent=4)
     return Response(respond(), mimetype='application/json')
 
-@app.route("/domains/<string:domain>", methods=['PUT'])
-def registerClaimDomain(domain):
-    try:
-        db.execute("INSERT INTO domains VALUES (?)", [domain])
-        db.commit()
-    except sqlite3.IntegrityError:
-        return "Failure", 403
-    return "OK", 200
-
 @app.route("/claims", methods=['GET'])
 def getClaims():
     dbc = db.cursor()
@@ -226,6 +217,7 @@ def syncPushServersPost(domain):
 
 if __name__ == "__main__":
     db.execute("CREATE TABLE IF NOT EXISTS domains (domain, PRIMARY KEY(domain))")
+    db.execute("INSERT OR REPLACE INTO domains VALUES('net.dn42.registry')")
     db.execute("CREATE TABLE IF NOT EXISTS claims (domain, label, timestamp, signature, " \
                "payload, PRIMARY KEY(domain, label, signature), " \
                "FOREIGN KEY(domain) REFERENCES domains(domain))")
